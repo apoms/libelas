@@ -22,6 +22,7 @@ Street, Fifth Floor, Boston, MA 02110-1301, USA
 // Demo program showing how libelas can be used, try "./elas -h" for help
 
 #include <iostream>
+#include <algorithm>
 #include "elas.h"
 #include "image.h"
 
@@ -57,11 +58,14 @@ void process (const char* file_1,const char* file_2) {
   float* D1_data = (float*)malloc(width*height*sizeof(float));
   float* D2_data = (float*)malloc(width*height*sizeof(float));
 
+  float* C1_data = (float*)malloc(width*height*sizeof(float));
+  float* C2_data = (float*)malloc(width*height*sizeof(float));
+
   // process
   Elas::parameters param;
   param.postprocess_only_left = false;
   Elas elas(param);
-  elas.process(I1->data,I2->data,D1_data,D2_data,dims);
+  elas.process(I1->data,I2->data,D1_data,D2_data,C1_data,C2_data,dims);
 
   // find maximum disparity for scaling output disparity images to [0..255]
   float disp_max = 0;
@@ -69,6 +73,19 @@ void process (const char* file_1,const char* file_2) {
     if (D1_data[i]>disp_max) disp_max = D1_data[i];
     if (D2_data[i]>disp_max) disp_max = D2_data[i];
   }
+  float conf_max = 0;
+  std::vector<float> conf_vals;
+  for (int32_t i=0; i<width*height; i++) {
+    conf_vals.push_back(C1_data[i]);
+    conf_vals.push_back(C2_data[i]);
+    if (C1_data[i]>conf_max) conf_max = C1_data[i];
+    if (C2_data[i]>conf_max) conf_max = C2_data[i];
+  }
+  std::sort(conf_vals.begin(), conf_vals.end());
+  float conf_perc50 = conf_vals[conf_vals.size() * 0.50];
+  float conf_perc90 = conf_vals[conf_vals.size() * 0.90];
+  float conf_perc95 = conf_vals[conf_vals.size() * 0.95];
+  float conf_perc99 = conf_vals[conf_vals.size() * 0.99];
 
   // copy float to uchar
   image<uchar> *D1 = new image<uchar>(width,height);
@@ -76,6 +93,12 @@ void process (const char* file_1,const char* file_2) {
   for (int32_t i=0; i<width*height; i++) {
     D1->data[i] = (uint8_t)max(255.0*D1_data[i]/disp_max,0.0);
     D2->data[i] = (uint8_t)max(255.0*D2_data[i]/disp_max,0.0);
+  }
+  image<uchar> *C1 = new image<uchar>(width,height);
+  image<uchar> *C2 = new image<uchar>(width,height);
+  for (int32_t i=0; i<width*height; i++) {
+    C1->data[i] = (uint8_t)max(255.0*C1_data[i]/conf_max,0.0);
+    C2->data[i] = (uint8_t)max(255.0*C2_data[i]/conf_max,0.0);
   }
 
   // save disparity images
@@ -89,14 +112,27 @@ void process (const char* file_1,const char* file_2) {
   strcat(output_2,"_disp.pgm");
   savePGM(D1,output_1);
   savePGM(D2,output_2);
+  // save confidence images
+  strncpy(output_1,file_1,strlen(file_1)-4);
+  strncpy(output_2,file_2,strlen(file_2)-4);
+  output_1[strlen(file_1)-4] = '\0';
+  output_2[strlen(file_2)-4] = '\0';
+  strcat(output_1,"_conf.pgm");
+  strcat(output_2,"_conf.pgm");
+  savePGM(C1,output_1);
+  savePGM(C2,output_2);
 
   // free memory
   delete I1;
   delete I2;
   delete D1;
   delete D2;
+  delete C1;
+  delete C2;
   free(D1_data);
   free(D2_data);
+  free(C1_data);
+  free(C2_data);
 }
 
 int main (int argc, char** argv) {

@@ -164,4 +164,11 @@ void savePGM(image<uchar> *im, const char *name) {
   file.write((char *)imPtr(im, 0, 0), width * height * sizeof(uchar));
 }
 
+void savePGM(uint8_t* data, int width, int height, const char *name) {
+  std::ofstream file(name, std::ios::out | std::ios::binary);
+
+  file << "P5\n" << width << " " << height << "\n" << UCHAR_MAX << "\n";
+  file.write((char *)data, width * height * sizeof(uchar));
+}
+
 #endif

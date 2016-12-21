@@ -159,7 +159,10 @@ public:
   //         note: D1 and D2 must be allocated before (bytes per line = width)
   //               if subsampling is not active their size is width x height,
   //               otherwise width/2 x height/2 (rounded towards zero)
-  void process (uint8_t* I1,uint8_t* I2,float* D1,float* D2,const int32_t* dims);
+  void process (uint8_t* I1,uint8_t* I2,
+                float* D1,float* D2,
+                float* C1,float* C2,
+                const int32_t* dims);
   
 private:
   
@@ -199,21 +202,22 @@ private:
   void createGrid (std::vector<support_pt> p_support,int32_t* disparity_grid,int32_t* grid_dims,bool right_image);
 
   // matching
+  inline void computeConfidence (int32_t energy, float& confidence);
   inline void updatePosteriorMinimum (__m128i* I2_block_addr,const int32_t &d,const int32_t &w,
                                       const __m128i &xmm1,__m128i &xmm2,int32_t &val,int32_t &min_val,int32_t &min_d);
   inline void updatePosteriorMinimum (__m128i* I2_block_addr,const int32_t &d,
                                       const __m128i &xmm1,__m128i &xmm2,int32_t &val,int32_t &min_val,int32_t &min_d);
   inline void findMatch (int32_t &u,int32_t &v,float &plane_a,float &plane_b,float &plane_c,
                          int32_t* disparity_grid,int32_t *grid_dims,uint8_t* I1_desc,uint8_t* I2_desc,
-                         int32_t *P,int32_t &plane_radius,bool &valid,bool &right_image,float* D);
+                         int32_t *P,int32_t &plane_radius,bool &valid,bool &right_image,float* D,float* C);
   void computeDisparity (std::vector<support_pt> p_support,std::vector<triangle> tri,int32_t* disparity_grid,int32_t* grid_dims,
-                         uint8_t* I1_desc,uint8_t* I2_desc,bool right_image,float* D);
+                         uint8_t* I1_desc,uint8_t* I2_desc,bool right_image,float* D,float* C);
 
   // L/R consistency check
-  void leftRightConsistencyCheck (float* D1,float* D2);
+  void leftRightConsistencyCheck (float* D1,float* D2,float* C1,float* C2);
   
   // postprocessing
-  void removeSmallSegments (float* D);
+  void removeSmallSegments (float* D,float* C);
   void gapInterpolation (float* D);
 
   // optional postprocessing

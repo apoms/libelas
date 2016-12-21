@@ -29,7 +29,8 @@ Street, Fifth Floor, Boston, MA 02110-1301, USA
 
 using namespace std;
 
-void Elas::process (uint8_t* I1_,uint8_t* I2_,float* D1,float* D2,const int32_t* dims){
+void Elas::process (uint8_t* I1_,uint8_t* I2_,float* D1,float* D2,
+                    float* C1,float* C2,const int32_t* dims){
   
   // get width, height and bytes per line
   width  = dims[0];
@@ -85,7 +86,6 @@ void Elas::process (uint8_t* I1_,uint8_t* I2_,float* D1,float* D2,const int32_t*
 #ifdef PROFILE
   timer.start("Grid");
 #endif
-
   // allocate memory for disparity grid
   int32_t grid_width   = (int32_t)ceil((float)width/(float)param.grid_size);
   int32_t grid_height  = (int32_t)ceil((float)height/(float)param.grid_size);
@@ -99,20 +99,20 @@ void Elas::process (uint8_t* I1_,uint8_t* I2_,float* D1,float* D2,const int32_t*
 #ifdef PROFILE
   timer.start("Matching");
 #endif
-  computeDisparity(p_support,tri_1,disparity_grid_1,grid_dims,desc1.I_desc,desc2.I_desc,0,D1);
-  computeDisparity(p_support,tri_2,disparity_grid_2,grid_dims,desc1.I_desc,desc2.I_desc,1,D2);
+  computeDisparity(p_support,tri_1,disparity_grid_1,grid_dims,desc1.I_desc,desc2.I_desc,0,D1, C1);
+  computeDisparity(p_support,tri_2,disparity_grid_2,grid_dims,desc1.I_desc,desc2.I_desc,1,D2, C2);
 
 #ifdef PROFILE
   timer.start("L/R Consistency Check");
 #endif
-  leftRightConsistencyCheck(D1,D2);
+  leftRightConsistencyCheck(D1,D2,C1,C2);
 
 #ifdef PROFILE
   timer.start("Remove Small Segments");
 #endif
-  removeSmallSegments(D1);
+  removeSmallSegments(D1,C1);
   if (!param.postprocess_only_left)
-    removeSmallSegments(D2);
+    removeSmallSegments(D2,C2);
 
 #ifdef PROFILE
   timer.start("Gap Interpolation");
@@ -142,6 +142,17 @@ void Elas::process (uint8_t* I1_,uint8_t* I2_,float* D1,float* D2,const int32_t*
 #ifdef PROFILE
   timer.plot();
 #endif
+
+  for (int h = 0; h < height; ++h) {
+    for (int w = 0; w < width; ++w) {
+      if (D1[h * width + w] == -10) {
+        C1[h * width + w] = 0.0f;
+      }
+      if (D2[h * width + w] == -10) {
+        C2[h * width + w] = 0.0f;
+      }
+    }
+  }
 
   // release memory
   free(disparity_grid_1);
@@ -658,6 +669,10 @@ void Elas::createGrid(vector<support_pt> p_support,int32_t* disparity_grid,int32
   free(temp2);
 }
 
+inline void Elas::computeConfidence(int32_t energy, float& confidence) {
+  confidence = exp((-1.0f*energy)/10000.0f);
+}
+
 inline void Elas::updatePosteriorMinimum(__m128i* I2_block_addr,const int32_t &d,const int32_t &w,
                                          const __m128i &xmm1,__m128i &xmm2,int32_t &val,int32_t &min_val,int32_t &min_d) {
   xmm2 = _mm_load_si128(I2_block_addr);
@@ -682,7 +697,7 @@ inline void Elas::updatePosteriorMinimum(__m128i* I2_block_addr,const int32_t &d
 
 inline void Elas::findMatch(int32_t &u,int32_t &v,float &plane_a,float &plane_b,float &plane_c,
                             int32_t* disparity_grid,int32_t *grid_dims,uint8_t* I1_desc,uint8_t* I2_desc,
-                            int32_t *P,int32_t &plane_radius,bool &valid,bool &right_image,float* D){
+                            int32_t *P,int32_t &plane_radius,bool &valid,bool &right_image,float* D,float* C){
   
   // get image width and height
   const int32_t disp_num    = grid_dims[0]-1;
@@ -775,13 +790,18 @@ inline void Elas::findMatch(int32_t &u,int32_t &v,float &plane_a,float &plane_b,
   }
 
   // set disparity value
-  if (min_d>=0) *(D+d_addr) = min_d; // MAP value (min neg-Log probability)
-  else          *(D+d_addr) = -1;    // invalid disparity
+  if (min_d>=0) {
+    *(D+d_addr) = min_d; // MAP value (min neg-Log probability)
+    computeConfidence(min_val, *(C+d_addr));
+  } else {
+    *(D+d_addr) = -1;    // invalid disparity
+    *(C+d_addr) = 0.0f;  // no confidence
+  }
 }
 
 // TODO: %2 => more elegantly
 void Elas::computeDisparity(vector<support_pt> p_support,vector<triangle> tri,int32_t* disparity_grid,int32_t *grid_dims,
-                            uint8_t* I1_desc,uint8_t* I2_desc,bool right_image,float* D) {
+                            uint8_t* I1_desc,uint8_t* I2_desc,bool right_image,float* D,float* C) {
 
   // number of disparities
   const int32_t disp_num  = grid_dims[0]-1;
@@ -791,11 +811,15 @@ void Elas::computeDisparity(vector<support_pt> p_support,vector<triangle> tri,in
   
   // init disparity image to -10
   if (param.subsampling) {
-    for (int32_t i=0; i<(width/2)*(height/2); i++)
+    for (int32_t i=0; i<(width/2)*(height/2); i++) {
       *(D+i) = -10;
+      *(C+i) = 0.0f;
+    }
   } else {
-    for (int32_t i=0; i<width*height; i++)
+    for (int32_t i=0; i<width*height; i++) {
       *(D+i) = -10;
+      *(C+i) = 0.0f;
+    }
   }
   
   // pre-compute prior 
@@ -880,7 +904,7 @@ void Elas::computeDisparity(vector<support_pt> p_support,vector<triangle> tri,in
           for (int32_t v=min(v_1,v_2); v<max(v_1,v_2); v++)
             if (!param.subsampling || v%2==0) {
               findMatch(u,v,plane_a,plane_b,plane_c,disparity_grid,grid_dims,
-                        I1_desc,I2_desc,P,plane_radius,valid,right_image,D);
+                        I1_desc,I2_desc,P,plane_radius,valid,right_image,D,C);
             }
         }
       }
@@ -895,7 +919,7 @@ void Elas::computeDisparity(vector<support_pt> p_support,vector<triangle> tri,in
           for (int32_t v=min(v_1,v_2); v<max(v_1,v_2); v++)
             if (!param.subsampling || v%2==0) {
               findMatch(u,v,plane_a,plane_b,plane_c,disparity_grid,grid_dims,
-                        I1_desc,I2_desc,P,plane_radius,valid,right_image,D);
+                        I1_desc,I2_desc,P,plane_radius,valid,right_image,D,C);
             }
         }
       }
@@ -906,7 +930,7 @@ void Elas::computeDisparity(vector<support_pt> p_support,vector<triangle> tri,in
   delete[] P;
 }
 
-void Elas::leftRightConsistencyCheck(float* D1,float* D2) {
+void Elas::leftRightConsistencyCheck(float* D1,float* D2,float* C1,float* C2) {
   
   // get disparity image dimensions
   int32_t D_width  = width;
@@ -950,12 +974,16 @@ void Elas::leftRightConsistencyCheck(float* D1,float* D2) {
         addr_warp = getAddressOffsetImage((int32_t)u_warp_1,v,D_width);
 
         // if check failed
-        if (fabs(*(D2_copy+addr_warp)-d1)>param.lr_threshold)
+        if (fabs(*(D2_copy+addr_warp)-d1)>param.lr_threshold) {
           *(D1+addr) = -10;
+          *(C1+addr) = 0.0f;
+        }
         
       // set invalid
-      } else
+      } else {
         *(D1+addr) = -10;
+        *(C1+addr) = 0.0f;
+      }
       
       // check if right disparity is valid
       if (d2>=0 && u_warp_2>=0 && u_warp_2<D_width) {       
@@ -964,12 +992,16 @@ void Elas::leftRightConsistencyCheck(float* D1,float* D2) {
         addr_warp = getAddressOffsetImage((int32_t)u_warp_2,v,D_width);
 
         // if check failed
-        if (fabs(*(D1_copy+addr_warp)-d2)>param.lr_threshold)
+        if (fabs(*(D1_copy+addr_warp)-d2)>param.lr_threshold) {
           *(D2+addr) = -10;
+          *(C2+addr) = 0.0f;
+        }
         
       // set invalid
-      } else
+      } else {
         *(D2+addr) = -10;
+        *(C2+addr) = 0.0f;
+      }
     }
   }
   
@@ -978,7 +1010,7 @@ void Elas::leftRightConsistencyCheck(float* D1,float* D2) {
   free(D2_copy);
 }
 
-void Elas::removeSmallSegments (float* D) {
+void Elas::removeSmallSegments (float* D,float* C) {
   
   // get disparity image dimensions
   int32_t D_width        = width;
@@ -1085,6 +1117,7 @@ void Elas::removeSmallSegments (float* D) {
           for (int32_t i=0; i<seg_list_count; i++) {
             addr_curr = getAddressOffsetImage(*(seg_list_u+i),*(seg_list_v+i),D_width);
             *(D+addr_curr) = -10;
+            *(C+addr_curr) = 0.0f;
           }
         }
       } // end: if (*(I_done+addr_start)==0)
